@@ -1,4 +1,5 @@
 DB/*.db
 DB/*.db-*
+DB/workers/
 node_modules/
 *.log

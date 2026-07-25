@@ -26,7 +26,7 @@ const USAGE = [
   '  config get',
 ].join('\n');
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   const command = args[0];
 
@@ -55,7 +55,12 @@ function main() {
   }
 
   const { positional, flags } = parseArgs(rest);
-  fn(positional, flags);
+  // worker start returns a promise (it blocks until stopped), everything
+  // else finishes right away - awaiting works for both cases.
+  await fn(positional, flags);
 }
 
-main();
+main().catch((err) => {
+  console.error(`queuectl: unexpected error: ${err.stack || err.message}`);
+  process.exitCode = 1;
+});

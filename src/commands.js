@@ -2,6 +2,8 @@
 
 const { randomUUID } = require('node:crypto');
 const { getDb } = require('./db');
+const { startWorkers } = require('./worker');
+const { stopAllWorkers } = require('./workers');
 
 // default retry count until config command is done
 const DEFAULT_MAX_RETRIES = 3;
@@ -50,14 +52,21 @@ function enqueue(positional) {
   console.log(`job added: ${id}`);
 }
 
-// worker stuff is not built yet, just placeholders for now
-function workerStart(positional, flags) {
+// starts count workers in the foreground, blocks here until they stop
+async function workerStart(positional, flags) {
   const count = flags.count ? Number(flags.count) : 1;
-  console.log(`would start ${count} worker(s)`);
+  await startWorkers(count);
 }
 
+// signals every running worker (even ones started in another terminal)
+// to finish their current job and stop
 function workerStop() {
-  console.log('would stop all running workers');
+  const pids = stopAllWorkers();
+  if (pids.length === 0) {
+    console.log('no workers running');
+  } else {
+    console.log(`stopped ${pids.length} worker(s): ${pids.join(', ')}`);
+  }
 }
 
 function status() {
