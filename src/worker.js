@@ -1,10 +1,10 @@
 'use strict';
 
-// this is the actual worker loop: reap stale jobs, look for a job, run it,
-// repeat.
+// this is the actual worker loop: reap stale jobs, promote ready retries,
+// look for a job, run it, repeat.
 
 const { spawn } = require('node:child_process');
-const { claimNextJob, completeJob, failJob, heartbeat } = require('./claim');
+const { claimNextJob, completeJob, failJob, heartbeat, promoteReadyRetries } = require('./claim');
 const { reapStaleJobs } = require('./reaper');
 const { registerWorker, deregisterWorker } = require('./workers');
 
@@ -58,15 +58,22 @@ async function runWorker() {
 
   try {
     while (!stopping) {
-      // before looking for new work, recover anything another (now-gone)
-      // worker left stuck in processing. every worker does this, not just
-      // one dedicated process, so recovery doesn't depend on any single
-      // process staying alive.
+      // before looking for new work: recover anything another (now-gone)
+      // worker left stuck in processing, and put any "failed" job whose
+      // backoff delay has passed back into "pending" so it's claimable.
+      // every worker does both of these, not just one dedicated process,
+      // so neither depends on any single process staying alive.
       try {
         const reaped = reapStaleJobs();
         if (reaped > 0) console.error(`[worker ${pid}] recovered ${reaped} stuck job(s)`);
       } catch (err) {
         console.error(`[worker ${pid}] db busy during reap, will retry: ${err.message}`);
+      }
+
+      try {
+        promoteReadyRetries();
+      } catch (err) {
+        console.error(`[worker ${pid}] db busy during retry check, will retry: ${err.message}`);
       }
 
       // claiming a job talks to a shared db file that other worker
@@ -99,8 +106,8 @@ async function runWorker() {
           completeJob(job.id, code);
           console.error(`[worker ${pid}] job ${job.id} completed`);
         } else {
-          failJob(job.id, code, error);
-          console.error(`[worker ${pid}] job ${job.id} failed: ${error}`);
+          const outcome = failJob(job.id, code, error);
+          console.error(`[worker ${pid}] job ${job.id} failed: ${error} (now ${outcome})`);
         }
       } catch (err) {
         // job already ran, but saving the result hit a busy db. it stays

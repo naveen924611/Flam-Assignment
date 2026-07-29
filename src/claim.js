@@ -1,8 +1,9 @@
 'use strict';
 
-// claiming, completing, and failing jobs
+// claiming, completing, failing (with backoff), and heartbeating jobs
 
 const { getDb } = require('./db');
+const { getConfig } = require('./config');
 
 function nowIso() {
   return new Date().toISOString();
@@ -53,13 +54,15 @@ function completeJob(id, exitCode) {
   ).run(nowIso(), exitCode, id);
 }
 
-// note: no backoff delay yet (that's the next phase). for now a failed
-// job either goes straight back to pending if it still has retries left,
-// or to dead if it's used them all up.
+// a failed job either goes to "dead" (out of retries) or "failed" with a
+// next_run_at pushed into the future by backoff-base ^ attempts seconds.
+// "failed" jobs are not claimable - claimNextJob only looks at "pending" -
+// so promoteReadyRetries() is what flips them back to pending once their
+// wait is over.
 function failJob(id, exitCode, errorMessage) {
   const db = getDb();
   const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(id);
-  if (!job) return;
+  if (!job) return null;
 
   const attempts = job.attempts + 1;
   const ts = nowIso();
@@ -71,14 +74,33 @@ function failJob(id, exitCode, errorMessage) {
            worker_pid = NULL, claimed_at = NULL, heartbeat_at = NULL
        WHERE id = ?`
     ).run(attempts, ts, exitCode, errorMessage, id);
-  } else {
-    db.prepare(
-      `UPDATE jobs
-       SET state = 'pending', attempts = ?, updated_at = ?, next_run_at = ?, last_exit_code = ?, last_error = ?,
-           worker_pid = NULL, claimed_at = NULL, heartbeat_at = NULL
-       WHERE id = ?`
-    ).run(attempts, ts, ts, exitCode, errorMessage, id);
+    return 'dead';
   }
+
+  const base = Number(getConfig('backoff-base'));
+  const delaySeconds = Math.pow(base, attempts);
+  const nextRunAt = new Date(Date.now() + delaySeconds * 1000).toISOString();
+
+  db.prepare(
+    `UPDATE jobs
+     SET state = 'failed', attempts = ?, updated_at = ?, next_run_at = ?,
+         last_exit_code = ?, last_error = ?,
+         worker_pid = NULL, claimed_at = NULL, heartbeat_at = NULL
+     WHERE id = ?`
+  ).run(attempts, ts, nextRunAt, exitCode, errorMessage, id);
+  return 'failed';
 }
 
-module.exports = { claimNextJob, completeJob, failJob, heartbeat };
+// flips "failed" jobs back to "pending" once their backoff delay has
+// passed, so the claim query (which only looks at "pending") can pick
+// them up again
+function promoteReadyRetries() {
+  const db = getDb();
+  const ts = nowIso();
+  db.prepare(`UPDATE jobs SET state = 'pending', updated_at = ? WHERE state = 'failed' AND next_run_at <= ?`).run(
+    ts,
+    ts
+  );
+}
+
+module.exports = { claimNextJob, completeJob, failJob, heartbeat, promoteReadyRetries };

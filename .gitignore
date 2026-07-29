@@ -1,5 +1,8 @@
 DB/*.db
 DB/*.db-*
+DB/*.old
 DB/workers/
+DB/.fuse_hidden*
 node_modules/
 *.log
+test-fresh.db*
